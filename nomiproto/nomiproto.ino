@@ -18,6 +18,10 @@
 #include "CalLib.h"
 
 
+// Logging lib
+#include "VcdLog.h"
+
+
 RTIMU *imu;                                           // the IMU object
 RTFusionRTQF fusion;                                  // the fusion object
 RTIMUSettings settings;                               // the settings object
@@ -25,6 +29,11 @@ CALLIB_DATA calData;                                  // the calibration data
 
 
 VcdLog logger;
+const int ANALOG = 1;
+const int DIGITAL = 0;
+const char AX_ID = '+';
+const char AY_ID = '"';
+const char AZ_ID = '*';
 
 
 //
@@ -103,18 +112,26 @@ static THD_FUNCTION(imuSensorTh1, arg) {
 
 //------------------------------------------------------------------------------
 void setup() {
-  int errcode;
 
+
+  // Serial -------------------------------------------------------------------------------
   Serial.begin(115200);
   // wait for USB Serial
   while (!Serial) {}
 
+  // I2C for IMU sensor
   Wire.begin();
+  
 
+  // VCDlogger
+  logger.addSignal(AX_ID, "ax", ANALOG);
+  logger.addSignal(AY_ID, "ay", ANALOG);
+  logger.addSignal(AZ_ID, "az", ANALOG);
 
+  // IMU ----------------------------------------------------------------------------------
   imu = RTIMU::createIMU(&settings);                 // create the imu object
 
-  
+  int errcode;
   if ((errcode = imu->IMUInit()) < 0) {
       Serial.print("Failed to init IMU: "); Serial.println(errcode);
   }
@@ -177,21 +194,14 @@ void setup() {
     }
   }
 
-  // // throw away input
-  // while (Serial.available()) {
-  //   Serial.read();
-  //   delay(10);
-  // }
-  // Serial.println(F("type any character to begin"));
-  // while(!Serial.available()); 
-
 
   // throw away input
   while (Serial.available()) {
     Serial.read();
     delay(10);
   }
-  //Serial.println(F("type any character to end"));
+
+  Serial.print(logger.getHeader()); //Print the header of the VCD file
   
   // start kernel
   chBegin(mainThread);
@@ -209,8 +219,6 @@ void mainThread() {
   // remember errors
   bool overrunError = false;
 
-  
-
 
   // start producer thread
   chThdCreateStatic(waThread1, sizeof(waThread1), NORMALPRIO + 1, imuSensorTh1, NULL);  
@@ -223,29 +231,10 @@ void mainThread() {
     FifoItem_t* p = &fifoArray[fifoTail];
     if (fifoTail >= FIFO_SIZE) fifoTail = 0;
 
-    //Serial.print("Data av:   ");
-
-    // print interval between points
-    // if (last) {
-    //   Serial.print((long)(p->msec - last);
-    // } else {
-    //   Serial.print("NA");
-    // }
-    // last = p->msec;
-    Serial.print("#");
-    Serial.println(p->msec);
-
-    Serial.print("r");
-    Serial.print((float)p->accel.x());
-    Serial.println(" +");
-    Serial.print("r");
-    Serial.print((float)p->accel.y());
-    Serial.println(" \"");
-    Serial.print("r");
-    Serial.print((float)p->accel.z());
-    Serial.println(" *");
-    Serial.print(p->error);
-    Serial.println("%");
+    Serial.print(logger.toVcdTime(p->msec));
+    Serial.print(logger.toVcdVal(AX_ID, p->accel.x()));
+    Serial.print(logger.toVcdVal(AY_ID, p->accel.y()));
+    Serial.print(logger.toVcdVal(AZ_ID, p->accel.z()));
 
     // remember error
     if (p->error) overrunError = true;
