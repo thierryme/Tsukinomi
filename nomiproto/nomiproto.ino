@@ -9,20 +9,22 @@
 #include <ChibiOS_ARM.h>
 #include <SdFat.h>
 
-// MPU9150 sensor lib
+// MPU9150 sensor libs
 #include <Wire.h>
 #include "I2Cdev.h"
 #include "RTIMUSettings.h"
 #include "RTIMU.h"
 #include "RTFusionRTQF.h" 
 #include "CalLib.h"
-//#include <EEPROM.h>
 
 
 RTIMU *imu;                                           // the IMU object
 RTFusionRTQF fusion;                                  // the fusion object
 RTIMUSettings settings;                               // the settings object
 CALLIB_DATA calData;                                  // the calibration data
+
+
+VcdLog logger;
 
 
 //
@@ -47,12 +49,20 @@ SEMAPHORE_DECL(fifoSpace, FIFO_SIZE);
 
 // data type for fifo item
 struct FifoItem_t {
-  uint32_t usec;  
+  unsigned long msec;  
   RTVector3 accel;
+  //long accel;
   int error;
 };
 // array of data items
 FifoItem_t fifoArray[FIFO_SIZE];
+
+// count of overrun errors
+int error = 0;
+
+// dummy data
+int count = 0;
+
 //------------------------------------------------------------------------------
 // 64 byte stack beyond task switch and interrupt needs
 static THD_WORKING_AREA(waThread1, 32);
@@ -61,49 +71,36 @@ static THD_FUNCTION(imuSensorTh1, arg) {
   // index of record to be filled
   size_t fifoHead = 0;
 
-  // count of overrun errors
-  int error = 0;
-
-  // dummy data
-  int count = 0;
-
   while (1) {
-    int loopCount = 1;
 
-
-
-    while (imu->IMURead()) {                                // get the latest data if ready yet
-      // this flushes remaining data in case we are falling behind
-      if (++loopCount >= 10)
-          continue;
-
-      chThdSleep(intervalTicks);
-      // get a buffer
-      if (chSemWaitTimeout(&fifoSpace, TIME_IMMEDIATE) != MSG_OK) {
-        // fifo full indicate missed point
-        error++;
-        continue;
-      }
-      
-      FifoItem_t* p = &fifoArray[fifoHead];
-      p->usec = count++;//micros();
-
-      //fusion.newIMUData(imu->getGyro(), imu->getAccel(), imu->getCompass(), imu->getTimestamp());
-      p->accel = (RTVector3&)imu->getAccel();
-
-      p->error = error;
-      error = 0;
-
-      // signal new data
-      chSemSignal(&fifoData);
-      
-      // advance FIFO index
-      fifoHead = fifoHead < (FIFO_SIZE - 1) ? fifoHead + 1 : 0;
+    chThdSleep(intervalTicks);
+    // get a buffer
+    if (chSemWaitTimeout(&fifoSpace, TIME_IMMEDIATE) != MSG_OK) {
+      // fifo full indicate missed point
+      error++;
+      continue;
     }
+    FifoItem_t* p = &fifoArray[fifoHead];
+    
 
+    imu->IMURead();
+    p->msec = imu->getTimestamp();
+
+    //fusion.newIMUData(imu->getGyro(), imu->getAccel(), imu->getCompass(), imu->getTimestamp());
+    p->accel = (RTVector3&)imu->getAccel();
+
+    p->error = error;
+    error = 0;
+
+    // signal new data
+    chSemSignal(&fifoData);
+    
+    // advance FIFO index
+    fifoHead = fifoHead < (FIFO_SIZE - 1) ? fifoHead + 1 : 0;
       
   }
 }
+
 //------------------------------------------------------------------------------
 void setup() {
   int errcode;
@@ -117,15 +114,13 @@ void setup() {
 
   imu = RTIMU::createIMU(&settings);                 // create the imu object
 
-  Serial.print("ArduinoIMU starting using device "); Serial.println(imu->IMUName());
+  
   if ((errcode = imu->IMUInit()) < 0) {
       Serial.print("Failed to init IMU: "); Serial.println(errcode);
   }
-
-  if (imu->getCalibrationValid())
-      Serial.println("Using compass calibration");
-  else
+  if (!imu->getCalibrationValid())
   {
+    Serial.print("ArduinoIMU starting using device "); Serial.println(imu->IMUName());
     Serial.println("No valid compass calibration data");
 
      //IMU compass sensor calibration -----------------------------------------------------
@@ -182,30 +177,21 @@ void setup() {
     }
   }
 
-  // throw away input
-  while (Serial.available()) {
-    Serial.read();
-    delay(10);
-  }
-  Serial.println(F("type any character to begin"));
-  while(!Serial.available()); 
-
-
-
-  
-  // open file
-  // if (!sd.begin(sdChipSelect)
-  //   || !file.open("DATA.CSV", O_CREAT | O_WRITE | O_TRUNC)) {
-  //   Serial.println(F("SD problem"));
-  //   sd.errorHalt();
+  // // throw away input
+  // while (Serial.available()) {
+  //   Serial.read();
+  //   delay(10);
   // }
-  
+  // Serial.println(F("type any character to begin"));
+  // while(!Serial.available()); 
+
+
   // throw away input
   while (Serial.available()) {
     Serial.read();
     delay(10);
   }
-  Serial.println(F("type any character to end"));
+  //Serial.println(F("type any character to end"));
   
   // start kernel
   chBegin(mainThread);
@@ -237,18 +223,29 @@ void mainThread() {
     FifoItem_t* p = &fifoArray[fifoTail];
     if (fifoTail >= FIFO_SIZE) fifoTail = 0;
 
+    //Serial.print("Data av:   ");
+
     // print interval between points
-    if (last) {
-      Serial.print(p->usec - last);
-    } else {
-      Serial.print("NA");
-    }
-    last = p->usec;
-    Serial.print(',');
-    //Serial.print(p->accel);
-    RTMath::display(" accel: ", p->accel);
-    Serial.print(', err: ');
-    Serial.println(p->error);
+    // if (last) {
+    //   Serial.print((long)(p->msec - last);
+    // } else {
+    //   Serial.print("NA");
+    // }
+    // last = p->msec;
+    Serial.print("#");
+    Serial.println(p->msec);
+
+    Serial.print("r");
+    Serial.print((float)p->accel.x());
+    Serial.println(" +");
+    Serial.print("r");
+    Serial.print((float)p->accel.y());
+    Serial.println(" \"");
+    Serial.print("r");
+    Serial.print((float)p->accel.z());
+    Serial.println(" *");
+    Serial.print(p->error);
+    Serial.println("%");
 
     // remember error
     if (p->error) overrunError = true;
@@ -259,6 +256,7 @@ void mainThread() {
     // advance FIFO index
     fifoTail = fifoTail < (FIFO_SIZE - 1) ? fifoTail + 1 : 0;
   }
+
   Serial.println(F("Done"));
   Serial.print(F("imuSensorTh1 unused stack: "));
   Serial.println(chUnusedStack(waThread1, sizeof(waThread1)));
