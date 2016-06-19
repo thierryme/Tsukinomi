@@ -69,12 +69,10 @@ FifoItem_t fifoArray[FIFO_SIZE];
 // count of overrun errors
 int error = 0;
 
-// dummy data
-int count = 0;
 
 //------------------------------------------------------------------------------
 // 64 byte stack beyond task switch and interrupt needs
-static THD_WORKING_AREA(waThread1, 32);
+static THD_WORKING_AREA(waImuSensTh1, 32);
 
 static THD_FUNCTION(imuSensorTh1, arg) {
   // index of record to be filled
@@ -108,6 +106,53 @@ static THD_FUNCTION(imuSensorTh1, arg) {
     fifoHead = fifoHead < (FIFO_SIZE - 1) ? fifoHead + 1 : 0;
       
   }
+}
+
+//------------------------------------------------------------------------------
+// 64 byte stack beyond task switch and interrupt needs
+static THD_WORKING_AREA(waSerialTh1, 32);
+
+static THD_FUNCTION(serialTh1, arg) {
+  // FIFO index for record to be written
+  size_t fifoTail = 0;
+
+  // remember errors
+  bool overrunError = false;
+
+  // start Serial write loop
+  while (!Serial.available()) {
+    // wait for next data point
+    chSemWait(&fifoData);
+
+    FifoItem_t* p = &fifoArray[fifoTail];
+    if (fifoTail >= FIFO_SIZE) fifoTail = 0;
+
+    Serial.print(logger.toVcdTime(p->msec));
+    Serial.print(logger.toVcdVal(AX_ID, p->accel.x()));
+    Serial.print(logger.toVcdVal(AY_ID, p->accel.y()));
+    Serial.print(logger.toVcdVal(AZ_ID, p->accel.z()));
+
+    // remember error
+    if (p->error) overrunError = true;
+
+    // release record
+    chSemSignal(&fifoSpace);
+    
+    // advance FIFO index
+    fifoTail = fifoTail < (FIFO_SIZE - 1) ? fifoTail + 1 : 0;
+  }
+
+  Serial.println(F("Done"));
+  Serial.print(F("imuSensorTh1 unused stack: "));
+  Serial.println(chUnusedStack(waImuSensTh1, sizeof(waImuSensTh1)));
+  Serial.print(F("Heap/Main unused: "));
+  Serial.println(chUnusedHeapMain());
+  if (overrunError) {
+    Serial.println();
+    Serial.println(F("** overrun errors **"));
+  }
+
+  while(1);
 }
 
 //------------------------------------------------------------------------------
@@ -210,51 +255,14 @@ void setup() {
 //------------------------------------------------------------------------------
 // main thread runs at NORMALPRIO
 void mainThread() {
-  // FIFO index for record to be written
-  size_t fifoTail = 0;
-
-  // time in micros of last point
-  uint32_t last = 0;
-
-  // remember errors
-  bool overrunError = false;
-
 
   // start producer thread
-  chThdCreateStatic(waThread1, sizeof(waThread1), NORMALPRIO + 1, imuSensorTh1, NULL);  
+  chThdCreateStatic(waImuSensTh1, sizeof(waImuSensTh1), NORMALPRIO + 1, imuSensorTh1, NULL);  
 
-  // start Serial write loop
-  while (!Serial.available()) {
-    // wait for next data point
-    chSemWait(&fifoData);
+  // start consumer thread
+  chThdCreateStatic(waSerialTh1, sizeof(waSerialTh1), LOWPRIO, serialTh1, NULL);
 
-    FifoItem_t* p = &fifoArray[fifoTail];
-    if (fifoTail >= FIFO_SIZE) fifoTail = 0;
 
-    Serial.print(logger.toVcdTime(p->msec));
-    Serial.print(logger.toVcdVal(AX_ID, p->accel.x()));
-    Serial.print(logger.toVcdVal(AY_ID, p->accel.y()));
-    Serial.print(logger.toVcdVal(AZ_ID, p->accel.z()));
-
-    // remember error
-    if (p->error) overrunError = true;
-
-    // release record
-    chSemSignal(&fifoSpace);
-    
-    // advance FIFO index
-    fifoTail = fifoTail < (FIFO_SIZE - 1) ? fifoTail + 1 : 0;
-  }
-
-  Serial.println(F("Done"));
-  Serial.print(F("imuSensorTh1 unused stack: "));
-  Serial.println(chUnusedStack(waThread1, sizeof(waThread1)));
-  Serial.print(F("Heap/Main unused: "));
-  Serial.println(chUnusedHeapMain());
-  if (overrunError) {
-    Serial.println();
-    Serial.println(F("** overrun errors **"));
-  }
   while(1);
 }
 //------------------------------------------------------------------------------
