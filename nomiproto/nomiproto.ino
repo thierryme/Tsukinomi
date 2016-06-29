@@ -22,6 +22,7 @@
 #include "VcdLog.h"
 
 
+
 RTIMU *imu;                                           // the IMU object
 RTFusionRTQF fusion;                                  // the fusion object
 RTIMUSettings settings;                               // the settings object
@@ -38,7 +39,7 @@ const char AZ_ID = '*';
 
 //
 // interval between points in units of 1000 usec
-const uint16_t intervalTicks = 50;
+const uint16_t intervalTicks = 1000;
 //------------------------------------------------------------------------------
 // SD file definitions
 // const uint8_t sdChipSelect = SS;
@@ -70,6 +71,23 @@ FifoItem_t fifoArray[FIFO_SIZE];
 int error = 0;
 
 
+void systemHaltCallback(const char* reason)
+{
+  Serial.print("HALT: ");
+  Serial.println(reason);
+}
+
+void contextSwitchCallback(thread_t *ntp, thread_t *otp)
+{
+  Serial.print("cntxSw: ");
+  Serial.println(ntp->p_name);
+}
+
+void threadInitCallback(thread_t *tp)
+{
+  Serial.println("thInit");
+}
+
 //------------------------------------------------------------------------------
 // 64 byte stack beyond task switch and interrupt needs
 static THD_WORKING_AREA(waImuSensTh1, 32);
@@ -78,16 +96,25 @@ static THD_FUNCTION(imuSensorTh1, arg) {
   // index of record to be filled
   size_t fifoHead = 0;
 
+  chRegSetThreadName("imuSens");
+
   while (1) {
 
+    Serial.print("<");
     chThdSleep(intervalTicks);
+
+    Serial.print("!");
+
     // get a buffer
     if (chSemWaitTimeout(&fifoSpace, TIME_IMMEDIATE) != MSG_OK) {
       // fifo full indicate missed point
       error++;
+      //Serial.print("E");
       continue;
     }
     FifoItem_t* p = &fifoArray[fifoHead];
+
+    Serial.print("pass sem");
     
 
     imu->IMURead();
@@ -99,14 +126,18 @@ static THD_FUNCTION(imuSensorTh1, arg) {
     p->error = error;
     error = 0;
 
+    Serial.print("N");
     // signal new data
     chSemSignal(&fifoData);
     
+    //Serial.print(">");
     // advance FIFO index
     fifoHead = fifoHead < (FIFO_SIZE - 1) ? fifoHead + 1 : 0;
+    Serial.println("end");
       
   }
 }
+
 
 //------------------------------------------------------------------------------
 // 64 byte stack beyond task switch and interrupt needs
@@ -114,23 +145,27 @@ static THD_WORKING_AREA(waSerialTh1, 32);
 
 static THD_FUNCTION(serialTh1, arg) {
   // FIFO index for record to be written
-  size_t fifoTail = 0;
+size_t fifoTail = 0;
 
-  // remember errors
-  bool overrunError = false;
+// remember errors
+bool overrunError = false;
 
+chRegSetThreadName("Serial");
+
+  
   // start Serial write loop
   while (!Serial.available()) {
+      //Serial.print("TEST TEST TEST i ser");
     // wait for next data point
     chSemWait(&fifoData);
 
     FifoItem_t* p = &fifoArray[fifoTail];
     if (fifoTail >= FIFO_SIZE) fifoTail = 0;
 
-    Serial.print(logger.toVcdTime(p->msec));
-    Serial.print(logger.toVcdVal(AX_ID, p->accel.x()));
-    Serial.print(logger.toVcdVal(AY_ID, p->accel.y()));
-    Serial.print(logger.toVcdVal(AZ_ID, p->accel.z()));
+    //Serial.print(logger.toVcdTime(p->msec));
+    //Serial.print(logger.toVcdVal(AX_ID, p->accel.x()));
+    //Serial.print(logger.toVcdVal(AY_ID, p->accel.y()));
+    //Serial.print(logger.toVcdVal(AZ_ID, p->accel.z()));
 
     // remember error
     if (p->error) overrunError = true;
@@ -142,14 +177,14 @@ static THD_FUNCTION(serialTh1, arg) {
     fifoTail = fifoTail < (FIFO_SIZE - 1) ? fifoTail + 1 : 0;
   }
 
-  Serial.println(F("Done"));
-  Serial.print(F("imuSensorTh1 unused stack: "));
-  Serial.println(chUnusedStack(waImuSensTh1, sizeof(waImuSensTh1)));
-  Serial.print(F("Heap/Main unused: "));
-  Serial.println(chUnusedHeapMain());
+  //Serial.println(F("Done"));
+  //Serial.print(F("imuSensorTh1 unused stack: "));
+  //Serial.println(chUnusedStack(waImuSensTh1, sizeof(waImuSensTh1)));
+  //Serial.print(F("Heap/Main unused: "));
+  //Serial.println(chUnusedHeapMain());
   if (overrunError) {
-    Serial.println();
-    Serial.println(F("** overrun errors **"));
+    //Serial.println();
+    //Serial.println(F("** overrun errors **"));
   }
 
   while(1);
@@ -176,19 +211,21 @@ void setup() {
   // IMU ----------------------------------------------------------------------------------
   imu = RTIMU::createIMU(&settings);                 // create the imu object
 
+  Serial.println("Good morning");
+
   int errcode;
   if ((errcode = imu->IMUInit()) < 0) {
-      Serial.print("Failed to init IMU: "); Serial.println(errcode);
+      //Serial.print("Failed to init IMU: "); //Serial.println(errcode);
   }
   if (!imu->getCalibrationValid())
   {
-    Serial.print("ArduinoIMU starting using device "); Serial.println(imu->IMUName());
-    Serial.println("No valid compass calibration data");
+    //Serial.print("ArduinoIMU starting using device "); //Serial.println(imu->IMUName());
+    //Serial.println("No valid compass calibration data");
 
      //IMU compass sensor calibration -----------------------------------------------------
-    Serial.println("ArduinoMagCal starting");
-    Serial.println("After the calibration started, enter s to save current data to EEPROM");
-    Serial.println(F("To start the calibration type any character"));
+    //Serial.println("ArduinoMagCal starting");
+    //Serial.println("After the calibration started, enter s to save current data to EEPROM");
+    //Serial.println(F("To start the calibration type any character"));
     while(!Serial.available()); 
    
     imu->setCalibrationMode(true);                     // make sure we get raw data
@@ -218,13 +255,13 @@ void setup() {
         }
      
         if (changed) {
-          Serial.println("-------");
-          Serial.print("minX: "); Serial.print(calData.magMin[0]);
-          Serial.print(" maxX: "); Serial.print(calData.magMax[0]); Serial.println();
-          Serial.print("minY: "); Serial.print(calData.magMin[1]);
-          Serial.print(" maxY: "); Serial.print(calData.magMax[1]); Serial.println();
-          Serial.print("minZ: "); Serial.print(calData.magMin[2]);
-          Serial.print(" maxZ: "); Serial.print(calData.magMax[2]); Serial.println();
+          //Serial.println("-------");
+          //Serial.print("minX: "); //Serial.print(calData.magMin[0]);
+          //Serial.print(" maxX: "); //Serial.print(calData.magMax[0]); //Serial.println();
+          //Serial.print("minY: "); //Serial.print(calData.magMin[1]);
+          //Serial.print(" maxY: "); //Serial.print(calData.magMax[1]); //Serial.println();
+          //Serial.print("minZ: "); //Serial.print(calData.magMin[2]);
+          //Serial.print(" maxZ: "); //Serial.print(calData.magMax[2]); //Serial.println();
         }
       }
       
@@ -232,7 +269,7 @@ void setup() {
         if (Serial.read() == 's') {                  // save the data
           calData.magValid = true;
           calLibWrite(0, &calData);
-          Serial.print("Mag cal data saved for device "); Serial.println(imu->IMUName());
+          //Serial.print("Mag cal data saved for device "); //Serial.println(imu->IMUName());
           break;
         }
       }
@@ -246,9 +283,13 @@ void setup() {
     delay(10);
   }
 
-  Serial.print(logger.getHeader()); //Print the header of the VCD file
+  //Serial.print(logger.getHeader()); //Print the header of the VCD file
   
   // start kernel
+  chHooksInit();
+  chHooksSetContextSwitchHook(contextSwitchCallback);
+  chHooksSetSystemHaltHook(systemHaltCallback);
+  chHooksSetThreadInitHook(threadInitCallback);
   chBegin(mainThread);
   while(1);
 }
@@ -256,14 +297,25 @@ void setup() {
 // main thread runs at NORMALPRIO
 void mainThread() {
 
+  chRegSetThreadName("mainTh");
   // start producer thread
   chThdCreateStatic(waImuSensTh1, sizeof(waImuSensTh1), NORMALPRIO + 1, imuSensorTh1, NULL);  
 
-  // start consumer thread
-  chThdCreateStatic(waSerialTh1, sizeof(waSerialTh1), LOWPRIO, serialTh1, NULL);
+  Serial.println("TEST TEST TEST b ser");
 
+  // start consumer thread
+  chThdCreateStatic(waSerialTh1, sizeof(waSerialTh1), LOWPRIO + 1, serialTh1, NULL);
+
+  Serial.println("TEST TEST TEST a ser");
+
+  chThdSleep(TIME_INFINITE);
 
   while(1);
+  // {
+  //   Serial.print("sh: ");
+  //   Serial.println(shared_kernel_hooks);
+  //   chThdSleep(100);
+  // }
 }
 //------------------------------------------------------------------------------
 void loop() {
