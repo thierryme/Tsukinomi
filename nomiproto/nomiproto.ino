@@ -21,6 +21,8 @@
 // Logging lib
 #include "VcdLog.h"
 
+#include "BufferedPrint.h"
+
 
 
 RTIMU *imu;                                           // the IMU object
@@ -29,7 +31,7 @@ RTIMUSettings settings;                               // the settings object
 CALLIB_DATA calData;                                  // the calibration data
 
 
-VcdLog logger;
+//VcdLog logger;
 const int ANALOG = 1;
 const int DIGITAL = 0;
 const char AX_ID = '+';
@@ -40,39 +42,41 @@ const char TH_IMU_ID = 'i';
 const char TH_MON_ID = 'm';
 const char TH_MAIN_ID = 'M';
 
-enum SensorType {INT};
-
 
 //
 // interval between points in units of 1000 usec
 const uint16_t intervalTicks = 50;
 
 
-// typedef struct SensorsEntry_t
-// {
-//   SensorType type;
-//   void* val;
-//   uint32_t msec;
-//   Mutex lock;
-// }SensorsEntry_t; 
+enum DataType {INT};
 
-// SensorsEntry_t sharedSensorsVals[5];
+typedef struct SensorsEntry_t
+{
+  DataType type;
+  uint32_t msec;
+  MUTEX_DECL(lock);
+  volatile void* val;
+}SensorsEntry_t; 
+
+SensorsEntry_t imu_th_data_container;
+volatile int imu_val;
 
 
-const char STRINGS_SIZE = 30;
-const char STR_MEMPOOL_SIZE = 20;
 
-//strings memory pool buffer for UART and SD card
-char str_mempool_buffer[STR_MEMPOOL_SIZE][STRINGS_SIZE];
+// const char STRINGS_SIZE = 30;
+// const char STR_MEMPOOL_SIZE = 20;
 
-// memory pool structure
-MEMORYPOOL_DECL(str_mempool, STR_MEMPOOL_SIZE, 0);
+// //strings memory pool buffer for UART and SD card
+// char str_mempool_buffer[STR_MEMPOOL_SIZE][STRINGS_SIZE];
 
-// slots for mailbox messages
-msg_t serial_mailbox_storage[STR_MEMPOOL_SIZE];
+// // memory pool structure
+// MEMORYPOOL_DECL(str_mempool, STR_MEMPOOL_SIZE, 0);
 
-// mailbox structure
-MAILBOX_DECL(serial_mailbox, &serial_mailbox_storage, STR_MEMPOOL_SIZE);
+// // slots for mailbox messages
+// msg_t serial_mailbox_storage[STR_MEMPOOL_SIZE];
+
+// // mailbox structure
+// MAILBOX_DECL(serial_mailbox, &serial_mailbox_storage, STR_MEMPOOL_SIZE);
 
 //------------------------------------------------------------------------------
 // SD file definitions
@@ -80,6 +84,9 @@ MAILBOX_DECL(serial_mailbox, &serial_mailbox_storage, STR_MEMPOOL_SIZE);
 // SdFat sd;
 // SdFile file;
 //------------------------------------------------------------------------------
+
+ChibiOSBufferedPrint BuffPrint(&Serial);
+VcdLog Logger(&BuffPrint);
 
 
 void systemHaltCallback(const char* reason)
@@ -114,36 +121,46 @@ static THD_FUNCTION(imuSensorTh, name) {
 
   chRegSetThreadName((char*)name);
 
+  imu_th_data_container.val = &imu_val;
+
   while (1) {
 
     chThdSleep(intervalTicks);
 
     
-    // get object from memory pool
-    char* msg = (char*)chPoolAlloc(&str_mempool);
-    if (!msg) {
-      Serial.println("chPoolAlloc failed");
-      while(1);
-    }
+    // // get object from memory pool
+    // char* msg = (char*)chPoolAlloc(&str_mempool);
+    // if (!msg) {
+    //   Serial.println("chPoolAlloc failed");
+    //   while(1);
+    // }
 
 
-    // chSysLock();
-    //imu->IMURead();
+    // // chSysLock();
+    // //imu->IMURead();
 
-    //form msg
-    strcpy(msg, "Toto et tata\n");
+    // //form msg
+    // strcpy(msg, "Toto et tata\n");
 
-    /*(logger.toVcdVal(AX_ID, (float)imu->getAccel().x()) + "\n"\
-           + logger.toVcdVal(AY_ID, (float)imu->getAccel().y())  + "\n"\
-           + logger.toVcdVal(AZ_ID, (float)imu->getAccel().z())  + "\n").c_str();*/
+    // (logger.toVcdVal(AX_ID, (float)imu->getAccel().x()) + "\n"\
+    //        + logger.toVcdVal(AY_ID, (float)imu->getAccel().y())  + "\n"\
+    //        + logger.toVcdVal(AZ_ID, (float)imu->getAccel().z())  + "\n").c_str();
 
-    // send message
+    // // send message
 
-    msg_t s = chMBPost(&serial_mailbox, (msg_t)msg, TIME_IMMEDIATE);
-    if (s != MSG_OK) {
-      Serial.println("chMBPost failed");
-      while(1);  
-    }
+    // msg_t s = chMBPost(&serial_mailbox, (msg_t)msg, TIME_IMMEDIATE);
+    // if (s != MSG_OK) {
+    //   Serial.println("chMBPost failed");
+    //   while(1);  
+    // }
+
+    //
+    //BuffPrint.println("Toto");
+    int tmps = millis();
+    imu_th_data_container.msec = tmps;
+    *((int*)imu_th_data_container.val) = tmps;
+
+
   }
 }
 
@@ -159,7 +176,7 @@ static THD_FUNCTION(monitorTh, name)
 
   for(;;)
   {
-    char *msg;
+    //char *msg;
 
     // int offset = ch.dbg.trace_buffer.tb_ptr - ch.dbg.trace_buffer.tb_buffer;
     // for(int i=0;i<ch.dbg.trace_buffer.tb_size;i++)
@@ -169,17 +186,34 @@ static THD_FUNCTION(monitorTh, name)
     //   Serial.println(ch.dbg.trace_buffer.tb_buffer[((ch.dbg.trace_buffer.tb_size-i-1)+offset)%ch.dbg.trace_buffer.tb_size].se_tp->p_name);
     // }
 
-    // get mail
-    chMBFetch(&serial_mailbox, (msg_t*)&msg, TIME_INFINITE);
+    // // get mail
+    // chMBFetch(&serial_mailbox, (msg_t*)&msg, TIME_INFINITE);
 
-    // Serial.print(logger.toVcdTime(p->msec));
-    // Serial.print(*(int*)p->val);
+    // // Serial.print(logger.toVcdTime(p->msec));
+    // // Serial.print(*(int*)p->val);
 
-    Serial.print(msg);
+    // Serial.print(msg);
 
-    // put memory back into pool
-    chPoolFree(&str_mempool, msg);
+    // // put memory back into pool
+    // chPoolFree(&str_mempool, msg);
+    Logger.printSignal(0,*((int*)imu_th_data_container.val),imu_th_data_container.msec);
+    chThdSleep(200);
 
+  }
+}
+
+static THD_WORKING_AREA(waSerialOut, 256);
+
+static THD_FUNCTION(serialOutTh, name)
+{
+
+  chRegSetThreadName((char*)name);
+
+
+  for(;;)
+  {
+
+    BuffPrint.runSerialSender();
 
   }
 }
@@ -196,19 +230,20 @@ void setup()
   // I2C for IMU sensor
   Wire.begin();
 
-  // fill pool with SerialPoolObject array
-  for (size_t i = 0; i < STR_MEMPOOL_SIZE; i++) {
-    chPoolFree(&str_mempool, &str_mempool_buffer[i]);
-  }
+  // // fill pool with SerialPoolObject array
+  // for (size_t i = 0; i < STR_MEMPOOL_SIZE; i++) {
+  //   chPoolFree(&str_mempool, &str_mempool_buffer[i]);
+  // }
 
   // VCDlogger
-  logger.addSignal(AX_ID, "ax", ANALOG);
-  logger.addSignal(AY_ID, "ay", ANALOG);
-  logger.addSignal(AZ_ID, "az", ANALOG);
+  // logger.addSignal(AX_ID, "ax", ANALOG);
+  // logger.addSignal(AY_ID, "ay", ANALOG);
+  // logger.addSignal(AZ_ID, "az", ANALOG);
 
-  logger.addSignal(TH_IMU_ID, "imu", DIGITAL);
-  logger.addSignal(TH_MON_ID, "mon", DIGITAL);
-  logger.addSignal(TH_MAIN_ID, "main", DIGITAL);
+  // logger.addSignal(TH_IMU_ID, "imu", DIGITAL);
+  // logger.addSignal(TH_MON_ID, "mon", DIGITAL);
+  // logger.addSignal(TH_MAIN_ID, "main", DIGITAL);
+  Logger.addSignal('"', "th_context", VL_DIGITAL);
 
 
   // IMU ----------------------------------------------------------------------------------
@@ -307,12 +342,20 @@ void mainThread()
 
 
   // start consumer thread
-  chThdCreateStatic(waMonitorTh, sizeof(waMonitorTh), LOWPRIO + 1, monitorTh, (void*)"serial");
+  chThdCreateStatic(waMonitorTh, sizeof(waMonitorTh), LOWPRIO + 1, monitorTh, (void*)"mon");
+  chThdCreateStatic(waSerialOut, sizeof(waSerialOut), LOWPRIO + 1, serialOutTh, (void*)"serial");
 
+  //chThdSleep(TIME_INFINITE);
+  Logger.printHeader();
+  chThdSleep(1000);
 
-  chThdSleep(TIME_INFINITE);
-
-  while(1);
+  while(1)
+  {
+    chThdSleep(400);
+    //Logger.printSignal(0,true,millis());
+    //BuffPrint.println("Coucou c'est le main je fais une string lonnnnnnnnnnguuuuuuue !!!");
+    chThdSleep(20);
+  }
 }
 //------------------------------------------------------------------------------
 void loop() {
