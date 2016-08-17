@@ -31,17 +31,6 @@ RTIMUSettings settings;                               // the settings object
 CALLIB_DATA calData;                                  // the calibration data
 
 
-//VcdLog logger;
-const int ANALOG = 1;
-const int DIGITAL = 0;
-const char AX_ID = '+';
-const char AY_ID = '"';
-const char AZ_ID = '*';
-
-const char TH_IMU_ID = 'i';
-const char TH_MON_ID = 'm';
-const char TH_MAIN_ID = 'M';
-
 
 //
 // interval between points in units of 1000 usec
@@ -61,6 +50,8 @@ typedef struct SensorsEntry_t
 SensorsEntry_t imu_container;
 RTVector3 imu_val;
 
+
+
 //------------------------------------------------------------------------------
 // SD file definitions
 const uint8_t sdChipSelect = 4;
@@ -68,55 +59,24 @@ SdFat sd;
 SdFile file;
 //------------------------------------------------------------------------------
 
-ChibiOSBufferedPrint<20> BuffPrintSd(&file);
-VcdLog SdLogger(__DATE__ " " __TIME__, "VcdLog V0.1 - Data flux log", "1 ms", &BuffPrintSd);
 
-ChibiOSBufferedPrint<20> BuffPrint(&Serial);
+
+// - Loggers -----------------------------------------------------------------------------
+int id_serial; 
+static THD_WORKING_AREA(waSerialOut, 256);
+
+ChBufferedPrint<20> BuffPrint(&Serial, waSerialOut, sizeof(waSerialOut), LOWPRIO + 1, "th_serial");
 VcdLog Logger(__DATE__ " " __TIME__, "VcdLog V0.1 - Thread context switch log", "1 ms", &BuffPrint);
 
+int id_sd;
+static THD_WORKING_AREA(waSdOut, 256);
+
+ChBufferedPrint<20> BuffPrintSd(&file, waSdOut, sizeof(waSdOut), LOWPRIO + 1, "th_sd");
+VcdLog SdLogger(__DATE__ " " __TIME__, "VcdLog V0.1 - Data flux log", "1 ms", &BuffPrintSd);
 
 
+//- Threads  -----------------------------------------------------------------------------
 
-//- Threads and system callback -----------------------------------------------------------------------------
-
-int id_main;
-int id_idle;
-
-void systemHaltCallback(const char* reason)
-{
-  Serial.print("HALT: ");
-  Serial.println(reason);
-  
-  int offset = ch.dbg.trace_buffer.tb_ptr - ch.dbg.trace_buffer.tb_buffer;
-  for(int i=0;i<ch.dbg.trace_buffer.tb_size;i++)
-  {
-    Serial.print(ch.dbg.trace_buffer.tb_buffer[((ch.dbg.trace_buffer.tb_size-i-1)+offset)%ch.dbg.trace_buffer.tb_size].se_time);
-    Serial.print(":");
-    Serial.print(ch.dbg.trace_buffer.tb_buffer[((ch.dbg.trace_buffer.tb_size-i-1)+offset)%ch.dbg.trace_buffer.tb_size].se_tp->log_id);
-    Serial.println(ch.dbg.trace_buffer.tb_buffer[((ch.dbg.trace_buffer.tb_size-i-1)+offset)%ch.dbg.trace_buffer.tb_size].se_tp->p_name);
-  }
-}
-
-void contextSwitchCallback(thread_t *ntp, thread_t *otp)
-{
-}
-
-void threadInitCallback(thread_t *tp)
-{
-  //Serial.println("thInit");
-}
-
-void idleLoopHookCallback()
-{
-  // static bool log_idle_init = false;
-
-  // if(log_idle_init == false)
-  // {
-  //   thread_t *tp = chThdGetSelfX();
-  //   tp->log_id = id_idle;
-  //   log_idle_init = true;
-  // }
-}
 
 int id_imu;
 static THD_WORKING_AREA(waImuSensTh, 256);
@@ -190,36 +150,47 @@ static THD_FUNCTION(dbgMonitorTh, name)
   }
 }
 
+int id_idle, id_main;
 
-int id_serial;
-static THD_WORKING_AREA(waSerialOut, 256);
 
-static THD_FUNCTION(serialOutTh, name)
+//- System callbacks -----------------------------------------------------------------------------
+
+void systemHaltCallback(const char* reason)
 {
-  chRegSetThreadName((char*)name);
-
-  for(;;)
+  Serial.print("HALT: ");
+  Serial.println(reason);
+  
+  int offset = ch.dbg.trace_buffer.tb_ptr - ch.dbg.trace_buffer.tb_buffer;
+  for(int i=0;i<ch.dbg.trace_buffer.tb_size;i++)
   {
-
-    BuffPrint.runSerialSender();
-
+    Serial.print(ch.dbg.trace_buffer.tb_buffer[((ch.dbg.trace_buffer.tb_size-i-1)+offset)%ch.dbg.trace_buffer.tb_size].se_time);
+    Serial.print(":");
+    Serial.print(ch.dbg.trace_buffer.tb_buffer[((ch.dbg.trace_buffer.tb_size-i-1)+offset)%ch.dbg.trace_buffer.tb_size].se_tp->log_id);
+    Serial.println(ch.dbg.trace_buffer.tb_buffer[((ch.dbg.trace_buffer.tb_size-i-1)+offset)%ch.dbg.trace_buffer.tb_size].se_tp->p_name);
   }
 }
 
-int id_sd;
-static THD_WORKING_AREA(waSdOut, 256);
-
-static THD_FUNCTION(sdOutTh, name)
+void contextSwitchCallback(thread_t *ntp, thread_t *otp)
 {
-  chRegSetThreadName((char*)name);
+}
 
-  for(;;)
+void threadInitCallback(thread_t *tp)
+{
+  //Serial.println("thInit");
+}
+
+void idleLoopHookCallback()
+{
+  static bool log_idle_init = false;
+
+  if(log_idle_init == false)
   {
-
-    BuffPrintSd.runSerialSender();
-
+    thread_t *tp = chThdGetSelfX();
+    tp->log_id = id_idle;
+    log_idle_init = true;
   }
 }
+
 
 //------------------------------------------------------------------------------
 void setup() 
@@ -407,11 +378,10 @@ void mainThread()
   tp->log_id = id_main;
 
 
-  // start consumer thread
-  tp = chThdCreateStatic(waSerialOut, sizeof(waSerialOut), LOWPRIO + 1, serialOutTh, (void*)"th_serial");
+  tp = BuffPrint.start();
   tp->log_id = id_serial;
 
-  tp = chThdCreateStatic(waSdOut, sizeof(waSdOut), LOWPRIO + 1, sdOutTh, (void*)"th_sd");
+  tp = BuffPrintSd.start();
   tp->log_id = id_sd;
 
   //chThdSleep(TIME_INFINITE);
