@@ -48,56 +48,51 @@ const char TH_MAIN_ID = 'M';
 const uint16_t intervalTicks = 50;
 
 
-enum DataType {INT};
+enum DataType {INT, CHAR};
 
 typedef struct SensorsEntry_t
 {
   DataType type;
   uint32_t msec;
   MUTEX_DECL(lock);
-  volatile void* val;
+  void* val;
 }SensorsEntry_t; 
 
-SensorsEntry_t imu_th_data_container;
-volatile int imu_val;
-
-
-
-// const char STRINGS_SIZE = 30;
-// const char STR_MEMPOOL_SIZE = 20;
-
-// //strings memory pool buffer for UART and SD card
-// char str_mempool_buffer[STR_MEMPOOL_SIZE][STRINGS_SIZE];
-
-// // memory pool structure
-// MEMORYPOOL_DECL(str_mempool, STR_MEMPOOL_SIZE, 0);
-
-// // slots for mailbox messages
-// msg_t serial_mailbox_storage[STR_MEMPOOL_SIZE];
-
-// // mailbox structure
-// MAILBOX_DECL(serial_mailbox, &serial_mailbox_storage, STR_MEMPOOL_SIZE);
+SensorsEntry_t imu_container;
+RTVector3 imu_val;
 
 //------------------------------------------------------------------------------
 // SD file definitions
-// const uint8_t sdChipSelect = SS;
-// SdFat sd;
-// SdFile file;
+const uint8_t sdChipSelect = 4;
+SdFat sd;
+SdFile file;
 //------------------------------------------------------------------------------
 
-ChibiOSBufferedPrint BuffPrint(&Serial);
-VcdLog Logger(&BuffPrint);
+ChibiOSBufferedPrint<20> BuffPrintSd(&file);
+VcdLog SdLogger(__DATE__ " " __TIME__, "VcdLog V0.1 - Data flux log", "1 ms", &BuffPrintSd);
 
+ChibiOSBufferedPrint<20> BuffPrint(&Serial);
+VcdLog Logger(__DATE__ " " __TIME__, "VcdLog V0.1 - Thread context switch log", "1 ms", &BuffPrint);
+
+
+
+
+//- Threads and system callback -----------------------------------------------------------------------------
+
+int id_main;
+int id_idle;
 
 void systemHaltCallback(const char* reason)
 {
   Serial.print("HALT: ");
   Serial.println(reason);
+  
   int offset = ch.dbg.trace_buffer.tb_ptr - ch.dbg.trace_buffer.tb_buffer;
   for(int i=0;i<ch.dbg.trace_buffer.tb_size;i++)
   {
     Serial.print(ch.dbg.trace_buffer.tb_buffer[((ch.dbg.trace_buffer.tb_size-i-1)+offset)%ch.dbg.trace_buffer.tb_size].se_time);
     Serial.print(":");
+    Serial.print(ch.dbg.trace_buffer.tb_buffer[((ch.dbg.trace_buffer.tb_size-i-1)+offset)%ch.dbg.trace_buffer.tb_size].se_tp->log_id);
     Serial.println(ch.dbg.trace_buffer.tb_buffer[((ch.dbg.trace_buffer.tb_size-i-1)+offset)%ch.dbg.trace_buffer.tb_size].se_tp->p_name);
   }
 }
@@ -111,8 +106,19 @@ void threadInitCallback(thread_t *tp)
   //Serial.println("thInit");
 }
 
-//------------------------------------------------------------------------------
-// 64 byte stack beyond task switch and interrupt needs
+void idleLoopHookCallback()
+{
+  // static bool log_idle_init = false;
+
+  // if(log_idle_init == false)
+  // {
+  //   thread_t *tp = chThdGetSelfX();
+  //   tp->log_id = id_idle;
+  //   log_idle_init = true;
+  // }
+}
+
+int id_imu;
 static THD_WORKING_AREA(waImuSensTh, 256);
 
 static THD_FUNCTION(imuSensorTh, name) {
@@ -121,51 +127,24 @@ static THD_FUNCTION(imuSensorTh, name) {
 
   chRegSetThreadName((char*)name);
 
-  imu_th_data_container.val = &imu_val;
+  imu_container.val = &imu_val;
 
   while (1) {
 
-    chThdSleep(intervalTicks);
-
-    
-    // // get object from memory pool
-    // char* msg = (char*)chPoolAlloc(&str_mempool);
-    // if (!msg) {
-    //   Serial.println("chPoolAlloc failed");
-    //   while(1);
-    // }
-
-
-    // // chSysLock();
-    // //imu->IMURead();
-
-    // //form msg
-    // strcpy(msg, "Toto et tata\n");
-
-    // (logger.toVcdVal(AX_ID, (float)imu->getAccel().x()) + "\n"\
-    //        + logger.toVcdVal(AY_ID, (float)imu->getAccel().y())  + "\n"\
-    //        + logger.toVcdVal(AZ_ID, (float)imu->getAccel().z())  + "\n").c_str();
-
-    // // send message
-
-    // msg_t s = chMBPost(&serial_mailbox, (msg_t)msg, TIME_IMMEDIATE);
-    // if (s != MSG_OK) {
-    //   Serial.println("chMBPost failed");
-    //   while(1);  
-    // }
-
-    //
-    //BuffPrint.println("Toto");
-    int tmps = millis();
-    imu_th_data_container.msec = tmps;
-    *((int*)imu_th_data_container.val) = tmps;
+   
+    if(imu->IMURead())
+    {
+      imu_container.msec = imu->getTimestamp();;
+      (*(RTVector3*)imu_container.val) = imu->getAccel();
+      chThdSleep(intervalTicks);
+    }
 
 
   }
 }
 
 
-
+int id_mon;
 static THD_WORKING_AREA(waMonitorTh, 256);
 
 static THD_FUNCTION(monitorTh, name)
@@ -173,47 +152,71 @@ static THD_FUNCTION(monitorTh, name)
 
   chRegSetThreadName((char*)name);
 
-
   for(;;)
   {
-    //char *msg;
-
-    // int offset = ch.dbg.trace_buffer.tb_ptr - ch.dbg.trace_buffer.tb_buffer;
-    // for(int i=0;i<ch.dbg.trace_buffer.tb_size;i++)
-    // {
-    //   Serial.print(ch.dbg.trace_buffer.tb_buffer[((ch.dbg.trace_buffer.tb_size-i-1)+offset)%ch.dbg.trace_buffer.tb_size].se_time);
-    //   Serial.print(":");
-    //   Serial.println(ch.dbg.trace_buffer.tb_buffer[((ch.dbg.trace_buffer.tb_size-i-1)+offset)%ch.dbg.trace_buffer.tb_size].se_tp->p_name);
-    // }
-
-    // // get mail
-    // chMBFetch(&serial_mailbox, (msg_t*)&msg, TIME_INFINITE);
-
-    // // Serial.print(logger.toVcdTime(p->msec));
-    // // Serial.print(*(int*)p->val);
-
-    // Serial.print(msg);
-
-    // // put memory back into pool
-    // chPoolFree(&str_mempool, msg);
-    Logger.printSignal(0,*((int*)imu_th_data_container.val),imu_th_data_container.msec);
+    SdLogger.printSignal(0,(float)((RTVector3*)imu_container.val)->x(),imu_container.msec);
     chThdSleep(200);
 
   }
 }
 
+int id_dbg_mon;
+static THD_WORKING_AREA(waDbgMonitorTh, 256);
+
+static THD_FUNCTION(dbgMonitorTh, name)
+{
+
+  ch_swc_event_t *last_trace = ch.dbg.trace_buffer.tb_ptr;
+
+  chRegSetThreadName((char*)name);
+
+  for(;;)
+  {
+
+    if(last_trace != ch.dbg.trace_buffer.tb_ptr)
+    {
+      ch_swc_event_t *old_trace = last_trace;
+      last_trace = last_trace < (ch.dbg.trace_buffer.tb_buffer + ch.dbg.trace_buffer.tb_size - 1) ? last_trace + 1 : ch.dbg.trace_buffer.tb_buffer;
+
+      Logger.printSignal(old_trace->se_tp->log_id, last_trace->se_state, last_trace->se_time-1);
+      Logger.printSignal(last_trace->se_tp->log_id, 1, last_trace->se_time);
+      // Logger.printSignal(old_trace->se_tp->log_id, false, last_trace->se_time);
+      // Logger.printSignal(last_trace->se_tp->log_id, true, last_trace->se_time);
+    }
+    else
+    {
+      chThdSleep(200);
+    }
+  }
+}
+
+
+int id_serial;
 static THD_WORKING_AREA(waSerialOut, 256);
 
 static THD_FUNCTION(serialOutTh, name)
 {
-
   chRegSetThreadName((char*)name);
-
 
   for(;;)
   {
 
     BuffPrint.runSerialSender();
+
+  }
+}
+
+int id_sd;
+static THD_WORKING_AREA(waSdOut, 256);
+
+static THD_FUNCTION(sdOutTh, name)
+{
+  chRegSetThreadName((char*)name);
+
+  for(;;)
+  {
+
+    BuffPrintSd.runSerialSender();
 
   }
 }
@@ -230,91 +233,150 @@ void setup()
   // I2C for IMU sensor
   Wire.begin();
 
-  // // fill pool with SerialPoolObject array
-  // for (size_t i = 0; i < STR_MEMPOOL_SIZE; i++) {
-  //   chPoolFree(&str_mempool, &str_mempool_buffer[i]);
-  // }
+  // Logger.addSignal('"', "th_context", VL_DIGITAL);
+  // SdLogger.addSignal('"', "th_context", VL_DIGITAL);
 
-  // VCDlogger
-  // logger.addSignal(AX_ID, "ax", ANALOG);
-  // logger.addSignal(AY_ID, "ay", ANALOG);
-  // logger.addSignal(AZ_ID, "az", ANALOG);
 
-  // logger.addSignal(TH_IMU_ID, "imu", DIGITAL);
-  // logger.addSignal(TH_MON_ID, "mon", DIGITAL);
-  // logger.addSignal(TH_MAIN_ID, "main", DIGITAL);
-  Logger.addSignal('"', "th_context", VL_DIGITAL);
+  SdLogger.addSignal('+', "ax", VL_REAL);
+  SdLogger.addSignal('"', "ay", VL_REAL);
+  SdLogger.addSignal('*', "az", VL_REAL);
+  SdLogger.addSignal('%', "sun_angle", VL_REAL);
+
+
+  id_main     = Logger.addSignal('+', "th_main", VL_INT);
+  id_mon      = Logger.addSignal('"', "th_mon", VL_INT);
+  id_dbg_mon  = Logger.addSignal('*', "th_dbg_mon", VL_INT);
+  id_serial   = Logger.addSignal('%', "th_serial", VL_INT);
+  id_sd       = Logger.addSignal('&', "th_sd", VL_INT);
+  id_imu      = Logger.addSignal('/', "th_imu", VL_INT);
+  id_idle     = Logger.addSignal('(', "th_idle", VL_INT);
+
+  
 
 
   // IMU ----------------------------------------------------------------------------------
   imu = RTIMU::createIMU(&settings);                 // create the imu object
 
+
+  char filename[10] = "log00.vcd";
+  int base_name_size = 3;
+
+  // open sd
+  if (!sd.begin(sdChipSelect))
+  {
+    sd.errorHalt();
+  }
+
+  while(sd.exists(filename)) 
+  {
+    if (filename[base_name_size + 1] != '9') 
+    {
+      filename[base_name_size + 1]++;
+    } 
+    else if (filename[base_name_size] != '9') 
+    {
+      filename[base_name_size + 1] = '0';
+      filename[base_name_size]++;
+    } 
+    else 
+    {
+      chSysHalt("Can't create file name");
+    }
+  }
+
+  if (!file.open(filename, O_CREAT | O_WRITE | O_TRUNC)) 
+  {
+    sd.errorHalt();
+    chSysHalt("SD problem");
+  }
+
+
   Serial.println("Good morning");
 
-  // int errcode;
-  // if ((errcode = imu->IMUInit()) < 0) {
-  //     //Serial.print("Failed to init IMU: "); //Serial.println(errcode);
-  // }
-  // if (!imu->getCalibrationValid())
-  // {
-  //   //Serial.print("ArduinoIMU starting using device "); //Serial.println(imu->IMUName());
-  //   //Serial.println("No valid compass calibration data");
 
-  //    //IMU compass sensor calibration -----------------------------------------------------
-  //   //Serial.println("ArduinoMagCal starting");
-  //   //Serial.println("After the calibration started, enter s to save current data to EEPROM");
-  //   //Serial.println(F("To start the calibration type any character"));
-  //   while(!Serial.available()); 
+  int errcode;
+  if ((errcode = imu->IMUInit()) < 0) 
+  {
+    Serial.print("Failed to init IMU: ");
+    Serial.println(errcode);
+  }
+  if (!imu->getCalibrationValid())
+  {
+    Serial.print("ArduinoIMU starting using device ");
+    Serial.println(imu->IMUName());
+    Serial.println("No valid compass calibration data");
+
+    //IMU compass sensor calibration -----------------------------------------------------
+    Serial.println("ArduinoMagCal starting");
+    Serial.println("After the calibration started, enter s to save current data to EEPROM");
+    Serial.println(F("To start the calibration type any character"));
+    while(!Serial.available()); 
    
-  //   imu->setCalibrationMode(true);                     // make sure we get raw data
+    imu->setCalibrationMode(true);                     // make sure we get raw data
 
-  //   calData.magValid = false;
-  //   for (int i = 0; i < 3; i++) {
-  //     calData.magMin[i] = 10000000;                    // init mag cal data
-  //     calData.magMax[i] = -10000000;
-  //   }
-  //   while(true)
-  //   {  
-  //     boolean changed;
-  //     RTVector3 mag;
+    calData.magValid = false;
+    for (int i = 0; i < 3; i++) {
+      calData.magMin[i] = 10000000;                    // init mag cal data
+      calData.magMax[i] = -10000000;
+    }
+    while(true)
+    {  
+      boolean changed;
+      RTVector3 mag;
       
-  //     if (imu->IMURead()) {                                 // get the latest data
-  //       changed = false;
-  //       mag = imu->getCompass();
-  //       for (int i = 0; i < 3; i++) {
-  //         if (mag.data(i) < calData.magMin[i]) {
-  //           calData.magMin[i] = mag.data(i);
-  //           changed = true;
-  //         }
-  //         if (mag.data(i) > calData.magMax[i]) {
-  //           calData.magMax[i] = mag.data(i);
-  //           changed = true;
-  //         }
-  //       }
+      if (imu->IMURead()) {                                 // get the latest data
+        changed = false;
+        mag = imu->getCompass();
+        for (int i = 0; i < 3; i++) {
+          if (mag.data(i) < calData.magMin[i]) {
+            calData.magMin[i] = mag.data(i);
+            changed = true;
+          }
+          if (mag.data(i) > calData.magMax[i]) {
+            calData.magMax[i] = mag.data(i);
+            changed = true;
+          }
+        }
      
-  //       if (changed) {
-  //         //Serial.println("-------");
-  //         //Serial.print("minX: "); //Serial.print(calData.magMin[0]);
-  //         //Serial.print(" maxX: "); //Serial.print(calData.magMax[0]); //Serial.println();
-  //         //Serial.print("minY: "); //Serial.print(calData.magMin[1]);
-  //         //Serial.print(" maxY: "); //Serial.print(calData.magMax[1]); //Serial.println();
-  //         //Serial.print("minZ: "); //Serial.print(calData.magMin[2]);
-  //         //Serial.print(" maxZ: "); //Serial.print(calData.magMax[2]); //Serial.println();
-  //       }
-  //     }
+        if (changed) {
+          Serial.println("-------");
+          Serial.print("minX: ");
+          Serial.print(calData.magMin[0]);
+          Serial.print(" maxX: ");
+          Serial.print(calData.magMax[0]);
+          Serial.println();
+
+          Serial.print("minY: ");
+          Serial.print(calData.magMin[1]);
+          Serial.print(" maxY: ");
+          Serial.print(calData.magMax[1]);
+          Serial.println();
+
+          Serial.print("minZ: ");
+          Serial.print(calData.magMin[2]);
+          Serial.print(" maxZ: ");
+          Serial.print(calData.magMax[2]);
+          Serial.println();
+        }
+      }
       
-  //     if (Serial.available()) {
-  //       if (Serial.read() == 's') {                  // save the data
-  //         calData.magValid = true;
-  //         calLibWrite(0, &calData);
-  //         //Serial.print("Mag cal data saved for device "); //Serial.println(imu->IMUName());
-  //         break;
-  //       }
-  //     }
-  //   }
-  // }
+      if (Serial.available())
+      {
+        if (Serial.read() == 's')
+        {                  // save the data
+          calData.magValid = true;
+          calLibWrite(0, &calData);
+          Serial.print("Mag cal data saved for device ");
+          Serial.println(imu->IMUName());
+          break;
+        }
+      }
+    }
+  }
 
 
+
+  Serial.println("Type anything to stop.");
   // throw away input
   while (Serial.available()) {
     Serial.read();
@@ -328,6 +390,8 @@ void setup()
   chHooksSetContextSwitchHook(contextSwitchCallback);
   chHooksSetSystemHaltHook(systemHaltCallback);
   chHooksSetThreadInitHook(threadInitCallback);
+  chHooksSetIdleLoopHook(idleLoopHookCallback);
+
   chBegin(mainThread);
   while(1);
 }
@@ -335,26 +399,48 @@ void setup()
 // main thread runs at NORMALPRIO
 void mainThread()
 {
+  thread_t *tp;
+  char *main_thread_name = "th_main";
 
-  chRegSetThreadName("main");
-  // start producer thread
-  chThdCreateStatic(waImuSensTh, sizeof(waImuSensTh), NORMALPRIO + 1, imuSensorTh, (void*)"imu");  
+  chRegSetThreadName(main_thread_name);
+  tp = chThdGetSelfX();
+  tp->log_id = id_main;
 
 
   // start consumer thread
-  chThdCreateStatic(waMonitorTh, sizeof(waMonitorTh), LOWPRIO + 1, monitorTh, (void*)"mon");
-  chThdCreateStatic(waSerialOut, sizeof(waSerialOut), LOWPRIO + 1, serialOutTh, (void*)"serial");
+  tp = chThdCreateStatic(waSerialOut, sizeof(waSerialOut), LOWPRIO + 1, serialOutTh, (void*)"th_serial");
+  tp->log_id = id_serial;
+
+  tp = chThdCreateStatic(waSdOut, sizeof(waSdOut), LOWPRIO + 1, sdOutTh, (void*)"th_sd");
+  tp->log_id = id_sd;
 
   //chThdSleep(TIME_INFINITE);
   Logger.printHeader();
+  SdLogger.printHeader();
   chThdSleep(1000);
+
+  // start producer threads
+  tp = chThdCreateStatic(waImuSensTh, sizeof(waImuSensTh), NORMALPRIO + 1, imuSensorTh, (void*)"th_imu");
+  tp->log_id = id_imu;
+
+  tp = chThdCreateStatic(waMonitorTh, sizeof(waMonitorTh), LOWPRIO + 1, monitorTh, (void*)"th_mon");
+  tp->log_id = id_mon;
+
+  tp = chThdCreateStatic(waDbgMonitorTh, sizeof(waDbgMonitorTh), LOWPRIO + 1, dbgMonitorTh, (void*)"th_dbg_mon");
+  tp->log_id = id_dbg_mon;
 
   while(1)
   {
-    chThdSleep(400);
-    //Logger.printSignal(0,true,millis());
-    //BuffPrint.println("Coucou c'est le main je fais une string lonnnnnnnnnnguuuuuuue !!!");
-    chThdSleep(20);
+    chThdSleep(200);    
+
+    if (Serial.available()) 
+    {
+      if(Serial.read())
+      {    
+        file.close();
+        chSysHalt("Exit by user");
+      }
+    }
   }
 }
 //------------------------------------------------------------------------------
