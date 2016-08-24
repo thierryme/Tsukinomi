@@ -196,18 +196,13 @@ void idleLoopHookCallback()
 void setup() 
 {
 
-  // Serial -------------------------------------------------------------------------------
+  // Serial init --------------------------------------------------------------------------
   Serial.begin(115200);
   // wait for USB Serial
   while (!Serial);
 
-  // I2C for IMU sensor
-  Wire.begin();
 
-  // Logger.addSignal('"', "th_context", VL_DIGITAL);
-  // SdLogger.addSignal('"', "th_context", VL_DIGITAL);
-
-
+  //Set the loggers traces
   SdLogger.addSignal('+', "ax", VL_REAL);
   SdLogger.addSignal('"', "ay", VL_REAL);
   SdLogger.addSignal('*', "az", VL_REAL);
@@ -223,12 +218,14 @@ void setup()
   id_idle     = Logger.addSignal('(', "th_idle", VL_INT);
 
   
+  // I2C for IMU sensor
+  Wire.begin();
 
-
-  // IMU ----------------------------------------------------------------------------------
+  // IMU init -----------------------------------------------------------------------------
   imu = RTIMU::createIMU(&settings);                 // create the imu object
 
 
+  // SD init ------------------------------------------------------------------------------
   char filename[10] = "log00.vcd";
   int base_name_size = 3;
 
